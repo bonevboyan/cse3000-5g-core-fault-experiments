@@ -1,0 +1,34 @@
+# Fault class: Dependency Failure — NRF Cascade (Availability Attack on Service Registry)
+# Target: NRF — the service registry all NFs use for discovery and OAuth token issuance
+# Expected propagation: Application-only
+#   All NFs simultaneously lose service discovery capability.
+#   AMF, SMF, AUSF, UDM, PCF all fail to resolve peer addresses via SCP→NRF.
+#   SCP floods with warnings as it forwards unresolvable discovery requests.
+#   NRF goes silent (pod dead) while all dependent NFs log errors.
+# Key signals:
+#   Traces:  NRF span count → 0, all other NFs error_rate → ~97%
+#   Logs:    NRF log_total = 0, SCP log_warn flood (~2000+), others ~120 errors each
+#   Metrics: NRF mem_bytes drops ~80% (pod restart), SCP net_tx doubles (retry storm)
+# Cross-modal fingerprint: root cause NF is SILENT across all modalities;
+#   victims are LOUD — only cross-modal correlation identifies NRF as root cause.
+#
+# Apply:  kubectl apply -f 15-nrf-cascade.yaml
+# Remove: kubectl delete -f 15-nrf-cascade.yaml
+#
+# Note: NRF will restart automatically via Kubernetes. The interesting window is the
+# gap between kill and successful restart + re-registration of all NFs.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: nrf-cascade
+  namespace: open5gs
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: nrf
+      app.kubernetes.io/instance: open5gs
+  duration: "3m"

@@ -1,0 +1,43 @@
+# Fault class: Network Partition — N2 Interface (AMF ↔ gNB NGAP/SCTP)
+# Target: AMF ↔ UERANSIM gNB — the NGAP control channel over SCTP port 38412
+# Expected propagation: Application only (no pod crash, no infra signal)
+#   Infrastructure: no pod restart; AMF and gNB pods remain Running
+#   Orchestration:  no K8s events; liveness probes unaffected
+#   Application:    NGAP SCTP link drops — gNB cannot deliver UE attach/detach messages;
+#                   existing registered UEs retain their AMF context (in-memory) but
+#                   any new RRC connection or handover fails silently;
+#                   AMF logs N2 setup failure; gNB retries NGAP Setup Request every ~5s;
+#                   no SBI calls affected — NRF/SCP/AUSF all healthy
+# Key signals:
+#   Metrics: AMF net_rx drops sharply (no NGAP traffic); SBI metrics stable
+#   Logs:    AMF logs "N2 link failure" / "NGAP setup timeout"; gNB logs retry loop
+#   Traces:  no AMF→SCP spans (no new UE registrations to trigger SBI calls)
+# Cross-modal fingerprint: AMF goes dark on N2 metrics while SBI layer stays healthy —
+#   opposite signature from AMF↔SCP partition (05) where SBI is dark but N2 is fine
+#
+# Apply:  kubectl apply -f 21-n2-partition-amf-gnb.yaml
+# Remove: kubectl delete -f 21-n2-partition-amf-gnb.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: n2-partition-amf-gnb
+  namespace: open5gs
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: amf
+      app.kubernetes.io/instance: open5gs
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/component: gnb
+        app.kubernetes.io/instance: ueransim-gnb
+  duration: "5m"

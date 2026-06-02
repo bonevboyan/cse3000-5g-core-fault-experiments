@@ -1,0 +1,35 @@
+# Fault class: CPU Stress — OAuth Token Exhaustion on NRF
+# Target: NRF — Network Repository Function, service registry and OAuth token server
+# Expected propagation:
+#   Infrastructure: NRF CPU throttling visible in container_cpu_cfs_throttled_seconds_total
+#   Orchestration:  Pod may be throttled by K8s resource limits
+#   Application:    NRF too slow to serve discovery/token requests → dependent NFs timeout
+#                   Unlike pod-kill, NRF stays alive but degraded — slower failure propagation
+# Key signals:
+#   Metrics: NRF cpu_rate spikes (NOT silent like pod-kill), SCP net_tx increases
+#   Logs:    NRF log_error increases (still logging unlike pod-kill), all NFs log timeouts
+#   Traces:  NRF p99_ms spikes, NRF error_rate increases; all NFs error_rate increases
+# Cross-modal fingerprint: NRF is LOUD (high CPU, errors, high latency spans);
+#   opposite of 18-nrf-cascade where NRF is completely silent.
+#   Gradual degradation vs hard failure — different temporal pattern in timeseries.
+#
+# Apply:  kubectl apply -f 18-cpu-stress-nrf.yaml
+# Remove: kubectl delete -f 18-cpu-stress-nrf.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-stress-nrf
+  namespace: open5gs
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: nrf
+      app.kubernetes.io/instance: open5gs
+  stressors:
+    cpu:
+      workers: 2
+      load: 80
+  duration: "5m"

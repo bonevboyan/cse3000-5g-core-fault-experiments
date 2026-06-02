@@ -1,0 +1,78 @@
+# Fault class: Network Bandwidth Saturation + CPU Stress (PFCP Session Establishment Flood)
+# Target: UPF — processes every PFCP Session Establishment Request on the N4 interface
+# Expected propagation: Infrastructure -> Orchestration (pod throttling) -> Application (PDU session failures)
+#   Infrastructure: container_cpu_cfs_throttled_seconds_total spike on UPF;
+#                   container_network_receive_bytes_total on N4 (eth0) saturates
+#   Orchestration:  HPA may attempt to scale UPF (if configured); readiness probe failures
+#                   visible in K8s events as the UPF event loop stalls
+#   Application:    SMF logs show PFCP response timeouts; new PDU session establishment
+#                   requests from AMF→SMF→UPF begin failing; existing sessions unaffected
+#                   (models a randomised SEID flood that exhausts the session table)
+# Key signals: pfcp_sessions_total stalls (no new sessions accepted),
+#              smf_pfcp_response_time_seconds P99 diverges,
+#              container_cpu_cfs_throttled_seconds_total{pod=~"upf.*"} rises sharply
+# Attack model: each injected request carries a randomised SEID, exhausting UPF
+#               session-tracking state — modelled via combined bandwidth saturation
+#               on the N4 path (eth0, SMF→UPF) and CPU stress inside the UPF container.
+# N6 note: this fault targets N4 only; N6/ogstun is not involved in session establishment
+#          and no externalTargets are needed.
+# Source: Amponis et al., "Threatening the 5G core via PFCP DoS attacks: the case of
+#         blocking UAV communications," EURASIP J. Wireless Comms & Networking, Dec 2022.
+#         https://doi.org/10.1186/s13638-022-02204-5
+#         ("PFCP Session Establishment DoS Attack" — Section 4.1)
+#
+# Apply:  kubectl apply -f 10-pfcp-session-establishment-flood-upf.yaml
+# Remove: kubectl delete -f 10-pfcp-session-establishment-flood-upf.yaml
+---
+# Object 1 of 2: saturate the N4 inbound path on UPF (eth0, SMF→UPF direction)
+# models the PFCP flood arriving from the attacker-controlled SMF-side host
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: pfcp-establishment-flood-n4-bandwidth
+  namespace: open5gs
+spec:
+  action: bandwidth
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: upf
+      app.kubernetes.io/instance: open5gs
+  direction: to              # inbound to UPF on eth0 — models flood arriving from SMF side
+  bandwidth:
+    rate: "900mbps"          # near-line-rate; adjust to match your UPF NIC capacity
+    limit: 10000
+    buffer: 10000
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/name: smf
+        app.kubernetes.io/instance: open5gs
+  duration: "5m"
+---
+# Object 2 of 2: CPU stress inside UPF to model session-table lookup exhaustion
+# stress-ng workers contend with the UPF datapath thread for CPU time,
+# collapsing throughput without killing the process (models graceful degradation)
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: pfcp-establishment-flood-upf-cpu
+  namespace: open5gs
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: upf
+      app.kubernetes.io/instance: open5gs
+  stressors:
+    cpu:
+      workers: 4
+      load: 85               # 85 % load per worker; leaves headroom so UPF stays alive
+  duration: "5m"

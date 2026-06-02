@@ -1,0 +1,33 @@
+# Fault class: Dependency Failure — Database Layer Crash (MongoDB Unavailable)
+# Target: MongoDB — persistent store for all subscriber data (SUPI, auth keys, PDU sessions)
+# Expected propagation: Application only (database layer, not NF layer)
+#   Infrastructure: MongoDB pod RSS drops to zero, PVC data survives restart
+#   Orchestration:  kube_pod_container_status_restarts_total{container="mongodb"} increments
+#   Application:    UDM/UDR cannot serve any subscriber queries;
+#                   new UE registrations fail (no subscriber profile lookup);
+#                   already-registered UEs unaffected (NF state is in-memory);
+#                   UDM, UDR, PCF all log DB connection errors simultaneously
+# Key signals:
+#   Metrics: MongoDB mem_bytes drops to zero; UDM/UDR cpu_rate drops (no work to do)
+#   Logs:    UDM/UDR log DB connection refused; AMF logs auth failures
+#   Traces:  UDM spans disappear; AUSF→UDM call chain breaks
+# Cross-modal fingerprint: MongoDB silent; UDM/UDR/PCF all loud simultaneously —
+#   distinguishes database layer fault from single-NF crash (UDM-only would leave UDR healthy)
+#
+# Apply:  kubectl apply -f 20-mongodb-pod-kill.yaml
+# Remove: kubectl delete -f 20-mongodb-pod-kill.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: mongodb-pod-kill
+  namespace: open5gs
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/instance: open5gs
+  duration: "5m"

@@ -1,0 +1,84 @@
+---
+# N4 packet loss — SMF↔UPF control path (internal target → direction: both is fine)
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: upf-infra-packet-loss-n4
+  namespace: open5gs
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: upf
+      app.kubernetes.io/instance: open5gs
+  direction: both          # valid: internal target selector is populated
+  loss:
+    loss: "30"
+    correlation: "25"
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/name: smf
+        app.kubernetes.io/instance: open5gs
+  duration: "5m"
+---
+# N6 packet loss — UPF↔DN data path (externalTargets → must use direction: to)
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: upf-infra-packet-loss-n6
+  namespace: open5gs
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: upf
+      app.kubernetes.io/instance: open5gs
+  direction: to            # ← was "both"; externalTargets only supports "to"
+  loss:
+    loss: "30"
+    correlation: "25"
+  externalTargets:
+    - "10.45.0.0/16"
+  duration: "5m"
+---
+# N6 packet loss — inbound direction workaround (inject loss on the DN side toward UPF)
+# Apply this only if you have a pod in the DN subnet you can select as the chaos source.
+# If not, the "to" rule above is the maximum coverage Chaos Mesh currently allows for
+# external targets and you should document the asymmetry in your experiment meta.json.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: upf-infra-packet-loss-n6-inbound
+  namespace: open5gs
+spec:
+  action: loss
+  mode: all
+  selector:                # ← select from the DN-side pod if one exists in-cluster
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: dn   # adjust to your data-network pod label
+      app.kubernetes.io/instance: open5gs
+  direction: to            # shapes traffic *from* dn pod *to* UPF — effective inbound loss
+  loss:
+    loss: "30"
+    correlation: "25"
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/name: upf
+        app.kubernetes.io/instance: open5gs
+  duration: "5m"

@@ -1,0 +1,38 @@
+# Fault class: Network Delay — SCP Interception (Man-in-the-Middle Simulation)
+# Target: SCP — Service Communication Proxy, routes all indirect NF-to-NF SBI calls
+# Affected interface: SBI — all NF-to-NF traffic in Model D passes through SCP
+# Expected propagation:
+#   Infrastructure: slight CPU queuing increase on SCP
+#   Orchestration:  unlikely to trigger K8s events for latency alone
+#   Application:    all SBI calls system-wide slow down → timeout errors across all NFs
+#                   Jaeger p99_ms spikes for every NF; AMF/SMF/AUSF log retry warnings
+# Key signals:
+#   Metrics: SCP cpu_rate increases, all NFs net_tx increases (retries)
+#   Logs:    timeout/retry warnings appear across all NFs simultaneously
+#   Traces:  p99_ms spikes on all NFs, error_rate increases gradually
+# Cross-modal fingerprint: gradual degradation across ALL NFs simultaneously;
+#   no pod crash — metrics/logs/traces all show latency not hard failure.
+#   Distinct from NRF cascade (hard failure) and AUSF stress (single NF).
+#
+# Apply:  kubectl apply -f 17-network-delay-scp.yaml
+# Remove: kubectl delete -f 17-network-delay-scp.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-scp
+  namespace: open5gs
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: scp
+      app.kubernetes.io/instance: open5gs
+  direction: to
+  delay:
+    latency: "500ms"
+    jitter: "20ms"
+    correlation: "25"
+  duration: "5m"

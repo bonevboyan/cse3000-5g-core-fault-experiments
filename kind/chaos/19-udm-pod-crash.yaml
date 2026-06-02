@@ -1,0 +1,33 @@
+# Fault class: Dependency Failure — UDM Pod Crash (Subscriber Data Store Unavailable)
+# Target: UDM — User Data Management, stores subscriber profiles and auth vectors
+# Expected propagation: Application only
+#   Infrastructure: UDM pod RSS drops to zero, rebounds on restart
+#   Orchestration:  kube_pod_container_status_restarts_total{container="udm"} increments
+#   Application:    AUSF cannot complete auth (no subscriber vectors from UDM);
+#                   new UE registrations fail at authentication step;
+#                   already-registered UEs unaffected (AMF holds context in memory);
+#                   NRF heartbeat from UDM stops — SCP marks UDM unavailable
+# Key signals:
+#   Metrics: UDM mem_bytes drops to zero then recovers; AUSF net_tx increases (retries)
+#   Logs:    AUSF logs "UDM not reachable"; AMF logs auth failures for new UEs
+#   Traces:  AUSF→UDM spans disappear during crash window; AMF error_rate increases
+# Cross-modal fingerprint: UDM silent across all modalities; AUSF loudly retrying;
+#   distinct from NRF cascade (single auth chain affected, not all NFs)
+#
+# Apply:  kubectl apply -f 19-udm-pod-crash.yaml
+# Remove: kubectl delete -f 19-udm-pod-crash.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: udm-pod-crash
+  namespace: open5gs
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: udm
+      app.kubernetes.io/instance: open5gs
+  duration: "5m"

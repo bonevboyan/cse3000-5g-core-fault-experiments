@@ -1,0 +1,34 @@
+# Fault class: CPU Stress — Authentication Flooding / DoS on AUSF
+# Target: AUSF — Authentication Server Function, handles all UE authentication
+# Expected propagation:
+#   Infrastructure: AUSF CPU throttling visible in container_cpu_cfs_throttled_seconds_total
+#   Orchestration:  Pod may be OOMKilled or throttled by K8s if sustained
+#   Application:    AMF cannot complete UE authentication → registration failures
+#                   UDM still healthy, NRF still healthy — cascade stops at auth chain
+# Key signals:
+#   Metrics: AUSF cpu_rate spikes, AMF net_tx increases (retries)
+#   Logs:    AUSF log_error flood, AMF logs authentication timeouts
+#   Traces:  AUSF error_rate and p99_ms spike; AMF error_rate increases
+# Cross-modal fingerprint: root cause NF is LOUD (high CPU, high errors);
+#   different from NRF cascade where root cause is silent.
+#
+# Apply:  kubectl apply -f 16-cpu-stress-ausf.yaml
+# Remove: kubectl delete -f 16-cpu-stress-ausf.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-stress-ausf
+  namespace: open5gs
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: ausf
+      app.kubernetes.io/instance: open5gs
+  stressors:
+    cpu:
+      workers: 2
+      load: 80
+  duration: "5m"

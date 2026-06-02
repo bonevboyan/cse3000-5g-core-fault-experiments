@@ -1,0 +1,40 @@
+# Fault class: Memory Pressure / OOM Kill — AMF (Control Plane Entry Point)
+# Target: AMF — handles all UE registrations and N2 signalling; limit is 128Mi
+# Expected propagation: Infrastructure -> Orchestration -> Application
+#   Infrastructure: container_memory_working_set_bytes spikes to 128Mi → OOM kill;
+#                   RSS drops to zero → cold-start heap on restart
+#   Orchestration:  K8s OOMKilling event; kube_pod_container_status_restarts_total increments;
+#                   if loop is rapid enough, CrashLoopBackOff with exponential back-off
+#   Application:    all in-flight UE registrations aborted; NGAP SCTP link to gNB torn down;
+#                   SCP and NRF lose AMF heartbeat — mark AMF unavailable in registry;
+#                   SMF holds orphaned PDU sessions until N11 cleanup timer fires
+# Key signals:
+#   Metrics: AMF mem spikes to limit then drops to zero; pod restarts increment
+#   Logs:    Loki gap in AMF stream; gNB logs "AMF connection lost"
+#   Traces:  AMF spans disappear during OOM window; SCP logs retry storm
+# Cross-modal fingerprint: identical to 03-pod-crash-amf at the Orchestration/Application
+#   layer, but Infrastructure layer shows memory spike BEFORE the crash — the pre-crash
+#   ramp distinguishes OOM from a clean kill.
+#
+# NOTE: size=192MiB exceeds AMF limit (128Mi) by 1.5x, reliably triggering OOM.
+#
+# Apply:  kubectl apply -f 22-memory-pressure-amf.yaml
+# Remove: kubectl delete -f 22-memory-pressure-amf.yaml
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: memory-pressure-amf
+  namespace: open5gs
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: amf
+      app.kubernetes.io/instance: open5gs
+  stressors:
+    memory:
+      workers: 2
+      size: "192MiB"
+  duration: "5m"

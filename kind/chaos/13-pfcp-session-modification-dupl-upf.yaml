@@ -1,0 +1,59 @@
+# Fault class: Network Packet Duplication (PFCP Session Modification — DUPL/Amplification Attack)
+# Target: gNB — UERANSIM gNB pod, N3 ingress (GTP-U from UPF)
+# Expected propagation: Infrastructure -> Application (orchestration largely silent)
+#   Infrastructure: gNB net_rx_bytes_total roughly doubles;
+#                   UPF net_tx_bytes_total rises (duplicate packets injected on receipt);
+#                   container_network_receive_packets_total{pod=~".*gnb.*"} ≈ 2× baseline
+#   Orchestration:  no pod restart; HPA quiescent
+#   Application:    UE receives duplicate copies of every downlink packet;
+#                   duplicate ACKs trigger TCP congestion control on UE sessions;
+#                   N3 interface instability — jitter and reorder visible at UE side;
+#                   progressive resource exhaustion at gNB as per-UE packet rate doubles
+# Key signals: container_network_receive_packets_total{pod=~".*gnb.*"} ≈ 2× baseline,
+#              ue_session_throughput_bytes rising without new UE attach events,
+#              UE-side pcap shows duplicate IP IDs and sequence numbers,
+#              gNB logs may show GTP-U sequence number gaps/reorder warnings
+# Attack model: adversary sets DUPL flag in the Apply Action field of a PFCP Modification
+#               Request, instructing UPF to fork every session's packets to a second FAR;
+#               the forked copy is a duplicate of the original GTP-U encapsulated packet.
+#               Modelled as packet duplication on the N3 inbound path at the gNB, which
+#               produces the same UE-visible and resource-exhaustion effects.
+# N6 note: 10.45.0.0/16 is routed via ogstun (intra-pod TUN) — Chaos Mesh cannot reach
+#          it via eth0. The DUPL attack's primary observable effects (duplicate packets,
+#          N3 instability, gNB resource exhaustion) are fully reproducible by injecting
+#          duplication on the N3 path at the gNB ingress instead.
+# Source: Amponis et al., "Threatening the 5G core via PFCP DoS attacks: the case of
+#         blocking UAV communications," EURASIP J. Wireless Comms & Networking, Dec 2022.
+#         https://doi.org/10.1186/s13638-022-02204-5
+#         ("PFCP Session Modification DoS Attack (DUPL)" — Section 4.4)
+#
+# Apply:  kubectl apply -f 13-pfcp-session-modification-dupl-upf.yaml
+# Remove: kubectl delete -f 13-pfcp-session-modification-dupl-upf.yaml
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: pfcp-modification-dupl-n3-gnb
+  namespace: open5gs
+spec:
+  action: duplicate
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/component: gnb
+      app.kubernetes.io/instance: ueransim-gnb
+  direction: to              # duplicate inbound GTP-U packets at gNB (from UPF)
+  duplicate:
+    duplicate: "100"         # 100 % duplication — every downlink packet forked, matching DUPL semantics
+    correlation: "25"        # low correlation keeps duplication spread across the session lifetime
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/name: upf
+        app.kubernetes.io/instance: open5gs
+  duration: "5m"

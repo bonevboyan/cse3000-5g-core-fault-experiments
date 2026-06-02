@@ -1,0 +1,157 @@
+# Grafana Beyla — eBPF auto-instrumenter for Open5GS SBI traces
+# Hooks at kernel level into processes listening on port 7777 (SBI) and
+# exports OTLP spans to Jaeger. No code changes to Open5GS required.
+#
+# Requires kernel 5.8+ with BTF (this cluster: 6.17 ✓)
+#
+# Apply:  kubectl apply -f k8s/monitoring/beyla-daemonset.yaml
+# Remove: kubectl delete -f k8s/monitoring/beyla-daemonset.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: beyla
+  namespace: open5gs
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: beyla
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: beyla
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: beyla
+subjects:
+- kind: ServiceAccount
+  name: beyla
+  namespace: open5gs
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: beyla
+  namespace: open5gs
+  labels:
+    app: beyla
+spec:
+  selector:
+    matchLabels:
+      app: beyla
+  template:
+    metadata:
+      labels:
+        app: beyla
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: beyla
+      hostPID: true
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: beyla
+        # PINNED (was floating `grafana/beyla:3`). The `:3` tag began resolving
+        # to 3.15.0 on 2026-05-26, whose k8s autodetect derives service.name
+        # from the shared `app.kubernetes.io/part-of: open5gs` label, collapsing
+        # every NF into a single `open5gs` service (run2 regression). 3.14.0
+        # uses the deployment name, giving per-NF service_name (amf/smf/scp/…),
+        # matching the canonical + trial4 runs. Digest so a cached `:3` can't win.
+        # If this still lumps, walk back: 3.13.0 / 3.12.0 / 3.11.0.
+        image: grafana/beyla:3.14.0@sha256:bb1213ac26b6e0e848c255682a3b1ef0513e7b505a4a369ea735b95d62b973e6
+        imagePullPolicy: IfNotPresent
+        env:
+        # Watch all processes listening on port 7777 (Open5GS SBI)
+        - name: OTEL_EBPF_OPEN_PORT
+          value: "7777"
+        # Also set old name for backward compat
+        - name: BEYLA_OPEN_PORT
+          value: "7777"
+        # Export traces via OTLP gRPC to Jaeger
+        - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          value: "http://jaeger.monitoring.svc.cluster.local:4317"
+        # Expose Prometheus metrics endpoint on port 9090
+        - name: BEYLA_PROMETHEUS_PORT
+          value: "9090"
+        # Disable OTLP metrics export (was going to Jaeger which drops them)
+        - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+          value: ""
+        # Use Kubernetes pod name/namespace as service name
+        - name: OTEL_EBPF_KUBE_METADATA_ENABLE
+          value: "autodetect"
+        - name: BEYLA_KUBE_METADATA_ENABLE
+          value: "autodetect"
+        # Sample everything (100%)
+        - name: OTEL_TRACES_SAMPLER
+          value: "always_on"
+        # INFO: DEBUG emits ~85% of namespace log volume (eBPF name-resolution
+        # chatter) and carries no fault-atlas signal; metrics/traces unaffected.
+        - name: OTEL_EBPF_LOG_LEVEL
+          value: "INFO"
+        - name: BEYLA_LOG_LEVEL
+          value: "INFO"
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        volumeMounts:
+        - name: var-run-beyla
+          mountPath: /var/run/beyla
+        - name: sys-kernel-debug
+          mountPath: /sys/kernel/debug
+          readOnly: false
+        - name: sys-fs-cgroup
+          mountPath: /sys/fs/cgroup
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+      volumes:
+      - name: var-run-beyla
+        emptyDir: {}
+      - name: sys-kernel-debug
+        hostPath:
+          path: /sys/kernel/debug
+      - name: sys-fs-cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+---
+# PodMonitor — tells Prometheus to scrape Beyla's metrics endpoint on each node
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: beyla
+  namespace: monitoring
+  labels:
+    release: kube-prom
+spec:
+  namespaceSelector:
+    matchNames:
+      - open5gs
+  selector:
+    matchLabels:
+      app: beyla
+  podMetricsEndpoints:
+  - port: metrics
+    path: /metrics
+    interval: 5s

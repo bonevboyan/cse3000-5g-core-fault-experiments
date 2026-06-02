@@ -1,0 +1,92 @@
+# Fault class: Network Packet Loss — Full Blackhole (PFCP Session Deletion Attack)
+# Target: UPF — N4 control path (SMF↔UPF) and N3 downlink path (UPF↔gNB)
+# Expected propagation: Application only (no infra/orchestration signal — UPF pod stays alive)
+#   Infrastructure: no CPU/memory anomaly; pod remains Running
+#   Orchestration:  no restart; readiness probe continues to pass (PFCP heartbeat on a
+#                   separate port is unaffected unless explicitly targeted)
+#   Application:    UPF silently drops all forwarded user-plane packets toward gNB;
+#                   SMF detects PFCP session loss after heartbeat window expires;
+#                   UE retains RAN registration (N1/N2 intact) but loses DN reachability;
+#                   connectivity restores only when UE re-registers or moves to new gNB
+#                   (new SEID association neutralises the stale deletion — per source)
+# Key signals: gNB net_rx drops to zero while UPF N4 rx remains non-zero,
+#              ue_pdu_session_active gauge drops without ue_registered gauge changing,
+#              SMF logs emit "PFCP session not found" for affected SEIDs
+# Attack model: adversary sends unauthorised Session Deletion Requests on N4, severing
+#               SMF's view of the session; modelled as full loss on the N4 response path
+#               (UPF cannot confirm sessions to SMF) plus GTP-U downlink loss at the gNB.
+# N6 note: 10.45.0.0/16 is routed via ogstun (intra-pod TUN) — Chaos Mesh cannot reach
+#          it via eth0. N3 downlink loss at the gNB is used instead: all encapsulated
+#          GTP-U packets that would carry DN data to the UE are dropped at the gNB ingress,
+#          producing the same UE-visible effect (no DN reachability) without requiring
+#          access to the ogstun interface.
+# Source: Amponis et al., "Threatening the 5G core via PFCP DoS attacks: the case of
+#         blocking UAV communications," EURASIP J. Wireless Comms & Networking, Dec 2022.
+#         https://doi.org/10.1186/s13638-022-02204-5
+#         ("PFCP Session Deletion DoS Attack" — Section 4.2)
+#
+# Apply:  kubectl apply -f 11-pfcp-session-deletion-upf.yaml
+# Remove: kubectl delete -f 11-pfcp-session-deletion-upf.yaml
+---
+# Object 1 of 2: black-hole N4 PFCP response path (UPF → SMF)
+# SMF receives no acknowledgements; after the PFCP heartbeat timeout it tears down
+# its local session state, mirroring the effect of a deletion request
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: pfcp-session-deletion-n4-loss
+  namespace: open5gs
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/name: upf
+      app.kubernetes.io/instance: open5gs
+  direction: from            # drop packets leaving UPF toward SMF on N4
+  loss:
+    loss: "100"
+    correlation: "0"
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/name: smf
+        app.kubernetes.io/instance: open5gs
+  duration: "5m"
+---
+# Object 2 of 2: drop inbound GTP-U at gNB (N3 downlink proxy for N6 effect)
+# ogstun (10.45.0.0/16) is intra-pod and unreachable by Chaos Mesh via eth0.
+# Dropping GTP-U encapsulated packets at the gNB ingress produces the same
+# UE-visible effect: no downlink data reaches the UE from the DN.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: pfcp-session-deletion-n3-gnb-loss
+  namespace: open5gs
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces:
+      - open5gs
+    labelSelectors:
+      app.kubernetes.io/component: gnb
+      app.kubernetes.io/instance: ueransim-gnb
+  direction: to              # drop inbound GTP-U at gNB — severs UE downlink
+  loss:
+    loss: "100"
+    correlation: "0"
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - open5gs
+      labelSelectors:
+        app.kubernetes.io/name: upf
+        app.kubernetes.io/instance: open5gs
+  duration: "5m"
