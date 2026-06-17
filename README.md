@@ -90,3 +90,7 @@ FAULT_DATASET=fault-detection-run2 bash run_all.sh
 Each fault produces `prometheus/`, `jaeger/`, `loki/`, `events/`, `nrf/`, and `rtt/`
 subtrees split into `pre/`, `during/`, `post/`, plus `health_pre.json`,
 `health_post.json`, and `meta.json`.
+
+## Contribution
+
+This repository was made for the course *CSE3000: Research Project* at TU Delft. It was developed by Boyan Bonev, David Ghergut, Yana Mihaylova, Stoyan Kutsarov and Victor Ilchev for the topic of *Observability for Intelligent Fault Management in Cloud-native Beyond 5G Networks*.
