@@ -4,10 +4,13 @@ Reproduces the fault-detection dataset: a cloud-native Open5GS 5G core run under
 22 chaos faults, each observed across six signal sources (Prometheus, Jaeger, Loki,
 Kubernetes events, the NRF API, and UE round-trip time).
 
-This folder holds the reproduction path only, with no analysis code or recorded data.
 For each fault the cluster is recreated from scratch, brought up under readiness gates,
 exercised with traffic, faulted, and recovered. Every signal is collected per phase
 (`pre`, `during`, `post`).
+
+The folder also ships the analysis code that turns the collected signals into the
+paper's fault atlas and its robustness checks (see [Analysis](#analysis)). No recorded
+data is included.
 
 ## Layout
 
@@ -28,6 +31,15 @@ experiments/
     provision_ues.sh               Subscriber provisioning
     collect_*.py, collect_ue_rtt.sh  Per-signal collectors
     hooks/<fault>.sh               Optional per-fault setup/teardown hooks
+analysis/
+  common.py                        Signal definitions, anomaly detectors, paths
+  a01_fault_atlas.py               Fault x signal atlas heatmap
+  a02_temporal.py                  First-layer / onset temporal heatmap
+  a03_temporal_delta.py            Onset delta between two runs
+  a04_propagation.py               Per-fault cross-NF propagation chains
+  a05_nf_impact.py                 Per-NF impact heatmap (needs a04)
+  a06_sensitivity.py               Threshold / estimator robustness sweep
+  a07_multirun.py                  Cross-run agreement (consensus atlas)
 ```
 
 ## Prerequisites
@@ -36,6 +48,13 @@ experiments/
 - `python3` (the collectors use only the standard library)
 - `sudo` for the one-time Docker iptables-chain fix
 - `curl`, `lsof`, `awk`
+
+The analysis code (not the collectors) additionally needs `pandas`, `numpy`, and
+`matplotlib`:
+
+```bash
+pip install pandas numpy matplotlib
+```
 
 ### Docker Hub auth (required)
 
@@ -90,6 +109,43 @@ FAULT_DATASET=fault-detection-run2 bash run_all.sh
 Each fault produces `prometheus/`, `jaeger/`, `loki/`, `events/`, `nrf/`, and `rtt/`
 subtrees split into `pre/`, `during/`, `post/`, plus `health_pre.json`,
 `health_post.json`, and `meta.json`.
+
+## Analysis
+
+The scripts under `analysis/` read a collected dataset and produce the paper's figures
+and robustness checks. Run them as modules from this folder, after collecting (or
+restoring) a dataset under `data/experiments/<dataset>/`.
+
+The analysis reads the dataset named by `FAULT_DATASET` (default `fault-detection`,
+matching the collection default). If you collected under a different name, export it
+first so the analysis matches. Outputs land in `data/analysis/` for the default dataset,
+or `data/analysis-<dataset>/` otherwise, with plots under `plots/`.
+
+```bash
+# from the repo root (set FAULT_DATASET only if you collected under another name)
+python -m analysis.a01_fault_atlas     # -> plots/atlas_heatmap.png      + fault_atlas.csv
+python -m analysis.a02_temporal        # -> plots/temporal_heatmap.png   + temporal_layers.csv
+python -m analysis.a04_propagation     # -> propagation/<fault>.json     + propagation_summary.csv
+python -m analysis.a05_nf_impact       # -> plots/nf_impact_heatmap.png  + nf_fault_matrix.csv
+python -m analysis.a06_sensitivity     # -> plots/sensitivity.png        + sensitivity.csv
+```
+
+`a05_nf_impact` reads the per-fault chains written by `a04_propagation`, so run `a04`
+first.
+
+Two scripts compare runs and take dataset/analysis directories as arguments:
+
+```bash
+# onset delta between two collected datasets (base, other)
+python -m analysis.a03_temporal_delta <base-dataset> <other-dataset>
+
+# cross-run consensus atlas over >=2 runs (each must already have fault_atlas.csv
+# from a01); with no arguments it auto-discovers analysis directories
+python -m analysis.a07_multirun <analysis-dir-1> <analysis-dir-2>
+```
+
+`a06_sensitivity.py` is the threshold/estimator robustness sweep (including PRISM's
+median/MAD estimator) and `a07_multirun.py` is the cross-run reproducibility check.
 
 ## Contribution
 
